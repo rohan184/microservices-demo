@@ -216,21 +216,17 @@ func initProfiling(service, version string) {
 func initRedisClient(ctx context.Context, svc *checkoutService) {
 
 	redisAddr := "redis-13783.crce179.ap-south-1-1.ec2.redns.redis-cloud.com:13783"
-
-	var username string
-	var password string
-
 	// Optionally fetch credentials from AWS Secrets Manager if configured
-	secretName := os.Getenv("arn:aws:kms:ap-south-1:038184794282:key/0f925495-fbf7-4937-a5b3-5124a5ab18b0")
-	awsRegion := os.Getenv("ap-south-1")
-	if secretName != "" && awsRegion != "" {
-		if _, err := getRedisCredentialsFromAWS(ctx, secretName, awsRegion); err != nil {
-			log.Warnf("failed to fetch redis credentials from secrets manager: %v", err)
-		} else {
-			username = "default"
-			password = "d2Vvv7ORCsdwvWDAWNs4jOEHVTkUYxee"
-		}
-	}
+	//secretName := os.Getenv("arn:aws:kms:ap-south-1:038184794282:key/0f925495-fbf7-4937-a5b3-5124a5ab18b0")
+	//awsRegion := os.Getenv("ap-south-1")
+	//if secretName != "" && awsRegion != "" {
+	//if _, err := getRedisCredentialsFromAWS(ctx, secretName, awsRegion); err != nil {
+	//	log.Warnf("failed to fetch redis credentials from secrets manager: %v", err)
+	//} else {
+	username := "default"
+	password := "d2Vvv7ORCsdwvWDAWNs4jOEHVTkUYxee"
+	//	}
+	//}
 
 	fmt.Println("username:", username)
 	fmt.Println("password:", password)
