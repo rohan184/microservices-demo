@@ -224,11 +224,11 @@ func initRedisClient(ctx context.Context, svc *checkoutService) {
 	secretName := os.Getenv("arn:aws:kms:ap-south-1:038184794282:key/0f925495-fbf7-4937-a5b3-5124a5ab18b0")
 	awsRegion := os.Getenv("ap-south-1")
 	if secretName != "" && awsRegion != "" {
-		if sec, err := getRedisCredentialsFromAWS(ctx, secretName, awsRegion); err != nil {
+		if _, err := getRedisCredentialsFromAWS(ctx, secretName, awsRegion); err != nil {
 			log.Warnf("failed to fetch redis credentials from secrets manager: %v", err)
 		} else {
-			username = sec.Username
-			password = sec.Password
+			username = "default"
+			password = "d2Vvv7ORCsdwvWDAWNs4jOEHVTkUYxee"
 		}
 	}
 
