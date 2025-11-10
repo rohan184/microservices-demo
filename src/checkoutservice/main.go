@@ -16,23 +16,29 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"time"
 
 	"cloud.google.com/go/profiler"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	pb "github.com/GoogleCloudPlatform/microservices-demo/src/checkoutservice/genproto"
 	money "github.com/GoogleCloudPlatform/microservices-demo/src/checkoutservice/money"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -46,6 +52,11 @@ const (
 )
 
 var log *logrus.Logger
+
+type RedisSecret struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
 
 func init() {
 	log = logrus.New()
@@ -81,6 +92,8 @@ type checkoutService struct {
 
 	paymentSvcAddr string
 	paymentSvcConn *grpc.ClientConn
+
+	redisClient *redis.Client
 }
 
 func main() {
@@ -119,6 +132,9 @@ func main() {
 	mustConnGRPC(ctx, &svc.currencySvcConn, svc.currencySvcAddr)
 	mustConnGRPC(ctx, &svc.emailSvcConn, svc.emailSvcAddr)
 	mustConnGRPC(ctx, &svc.paymentSvcConn, svc.paymentSvcAddr)
+
+	// Initialize Redis client (optional, best-effort)
+	initRedisClient(ctx, svc)
 
 	log.Infof("service config: %+v", svc)
 
@@ -197,6 +213,64 @@ func initProfiling(service, version string) {
 	log.Warn("could not initialize Stackdriver profiler after retrying, giving up")
 }
 
+func initRedisClient(ctx context.Context, svc *checkoutService) {
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+
+	var username string
+	var password string
+
+	// Optionally fetch credentials from AWS Secrets Manager if configured
+	secretName := os.Getenv("REDIS_SECRET_NAME")
+	awsRegion := os.Getenv("REDIS_AWS_REGION")
+	if secretName != "" && awsRegion != "" {
+		if sec, err := getRedisCredentialsFromAWS(ctx, secretName, awsRegion); err != nil {
+			log.Warnf("failed to fetch redis credentials from secrets manager: %v", err)
+		} else {
+			username = sec.Username
+			password = sec.Password
+		}
+	}
+
+	rc := redis.NewClient(&redis.Options{
+		Addr:     redisAddr,
+		Username: username,
+		Password: password,
+	})
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := rc.Ping(pingCtx).Err(); err != nil {
+		log.Warnf("redis not available at %q: %v", redisAddr, err)
+		return
+	}
+	log.Infof("connected to redis at %q", redisAddr)
+	svc.redisClient = rc
+}
+
+func getRedisCredentialsFromAWS(ctx context.Context, secretName, region string) (*RedisSecret, error) {
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+	client := secretsmanager.NewFromConfig(cfg)
+	resp, err := client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
+		SecretId: aws.String(secretName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secret: %w", err)
+	}
+	if resp.SecretString == nil {
+		return nil, fmt.Errorf("secret %s has no SecretString", secretName)
+	}
+	var out RedisSecret
+	if err := json.Unmarshal([]byte(*resp.SecretString), &out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal secret JSON: %w", err)
+	}
+	return &out, nil
+}
+
 func mustMapEnv(target *string, envKey string) {
 	v := os.Getenv(envKey)
 	if v == "" {
@@ -269,6 +343,9 @@ func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderReq
 		Items:              prep.orderItems,
 	}
 
+	// Persist order to Redis (best-effort)
+	cs.persistOrder(ctx, req.UserId, orderResult)
+
 	if err := cs.sendOrderConfirmation(ctx, req.Email, orderResult); err != nil {
 		log.Warnf("failed to send order confirmation to %q: %+v", req.Email, err)
 	} else {
@@ -276,6 +353,30 @@ func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderReq
 	}
 	resp := &pb.PlaceOrderResponse{Order: orderResult}
 	return resp, nil
+}
+
+func (cs *checkoutService) persistOrder(ctx context.Context, userID string, order *pb.OrderResult) {
+	if cs.redisClient == nil {
+		return
+	}
+	key := fmt.Sprintf("order:%s", order.GetOrderId())
+	js, err := protojson.Marshal(order)
+	if err != nil {
+		log.Warnf("failed to marshal order for persistence: %v", err)
+		return
+	}
+	if err := cs.redisClient.Set(ctx, key, js, 30*24*time.Hour).Err(); err != nil {
+		log.Warnf("failed to save order to redis: %v", err)
+	}
+	if userID != "" {
+		listKey := fmt.Sprintf("user:%s:orders", userID)
+		if err := cs.redisClient.LPush(ctx, listKey, order.GetOrderId()).Err(); err != nil {
+			log.Warnf("failed to index order by user in redis: %v", err)
+		}
+		if err := cs.redisClient.LTrim(ctx, listKey, 0, 99).Err(); err != nil {
+			log.Warnf("failed to trim user order list: %v", err)
+		}
+	}
 }
 
 type orderPrep struct {

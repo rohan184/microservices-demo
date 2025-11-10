@@ -123,7 +123,7 @@ spec:
                 - ALL
             privileged: false
             readOnlyRootFilesystem: true
-          image: us-central1-docker.pkg.dev/google-samples/microservices-demo/checkoutservice:v0.10.3
+          image: 038184794282.dkr.ecr.ap-south-1.amazonaws.com/checkoutservice:v1
           ports:
           - containerPort: 5050
           readinessProbe:
