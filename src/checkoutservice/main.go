@@ -232,6 +232,9 @@ func initRedisClient(ctx context.Context, svc *checkoutService) {
 		}
 	}
 
+	fmt.Println("username:", username)
+	fmt.Println("password:", password)
+
 	rc := redis.NewClient(&redis.Options{
 		Addr:     redisAddr,
 		Username: username,
