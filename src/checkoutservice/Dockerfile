@@ -36,6 +36,7 @@ COPY --from=builder /checkoutservice /src/checkoutservice
 # Default behavior - a failure prints a stack trace for the current goroutine.
 # See https://golang.org/pkg/runtime/
 ENV GOTRACEBACK=single
+ENV REDIS_ADDR=redis:6379
 
 EXPOSE 5050
 ENTRYPOINT ["/src/checkoutservice"]
