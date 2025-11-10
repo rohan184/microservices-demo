@@ -216,7 +216,7 @@ func initProfiling(service, version string) {
 func initRedisClient(ctx context.Context, svc *checkoutService) {
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
-		redisAddr = "localhost:6379"
+		redisAddr = "redis-13783.crce179.ap-south-1-1.ec2.redns.redis-cloud.com:13783"
 	}
 
 	var username string
